@@ -1,0 +1,16 @@
+{ /* this tests all features 
+  of a JSON file */
+  // like comments
+  "StringKey": "Value",
+  "NumberKey": 1,
+  "ObjectKey": {
+    "NestedStringKey": "NestedValue",
+    "NestedObjectKey": {
+      "NestedNestedString": "NestedNestedValue"
+    }
+  },
+  "ArrayKey": [ "Elem 1", "Elem 2" ],
+  "TrueKey": true,
+  "FalseKey": false,
+  "NullKey": null
+}

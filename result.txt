@@ -1,0 +1,2 @@
+"G:\Programming\Projects\JSONParser\Test Cases\n_array_colon_instead_of_comma.json" - no error.
+"G:\Programming\Projects\JSONParser\Test Cases\n_array_colon_instead_of_comma.json" - no error.
