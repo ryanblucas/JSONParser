@@ -13,24 +13,6 @@
 
 json_settings_t settings = JSON_CHECK_BOM;
 
-static inline int json_parse_hex_digit(char ch)
-{
-	if (ch >= '0' && ch <= '9')
-	{
-		return ch - '0';
-	}
-	if (ch >= 'A' && ch <= 'F')
-	{
-		return ch - 'A' + 10;
-	}
-	if (ch >= 'a' && ch <= 'f')
-	{
-		return ch - 'a' + 10;
-	}
-
-	return -1;
-}
-
 static inline void* json_realloc_with_zeros(const void* ptr, size_t old_size, size_t new_size)
 {
 	void* res = malloc(new_size);
@@ -78,6 +60,7 @@ static json_error_t json_parse_string(const char** praw, char** res)
 			|| *raw == '\r'
 			|| *raw == '\t')
 		{
+			free(*res);
 			return JSON_ERROR_UNESCAPED_CONTROL_CHARACTER;
 		}
 
@@ -113,23 +96,46 @@ static json_error_t json_parse_string(const char** praw, char** res)
 		case 't':
 			*curr++ = '\t';
 			break;
+
 		case 'u':
 		{
-			for (int i = 0; *raw && i < 2; i++)
+			char nibbles[4];
+			for (int i = 0; *raw && i < 4; i++)
 			{
-				int d1 = json_parse_hex_digit(*++raw),
-					d2 = json_parse_hex_digit(*++raw);
-				if (d1 == -1 || d2 == -1)
+				raw++;
+				if (*raw >= '0' && *raw <= '9')
+				{
+					nibbles[i] = *raw - '0';
+				}
+				else if (*raw >= 'A' && *raw <= 'F')
+				{
+					nibbles[i] = *raw - 'A' + 0x0A;
+				}
+				else if (*raw >= 'a' && *raw <= 'f')
+				{
+					nibbles[i] = *raw - 'a' + 0x0a;
+				}
+				else
 				{
 					free(*res);
 					return JSON_ERROR_INVALID_HEX_DIGIT;
 				}
-				if (d1 == 0 && d2 == 0) /* "ASCII," this doesn't expand into 16-bits since its most significant byte is 0. Don't write, continue. */
-				{
-					continue;
-				}
-				*curr++ = (d1 << 4) | d2;
 			}
+			char first = nibbles[0] | (nibbles[1] << 4),
+				second = nibbles[2] | (nibbles[3] << 4);
+
+			if (first == 0 && second == 0)
+			{
+				free(*res);
+				return JSON_ERROR_NULL_TERMINATOR;
+			}
+
+			if (second & 0x80)
+			{
+				*curr++ = first;
+			}
+			*curr++ = second;
+			raw--;
 			break;
 		}
 		default:
@@ -231,20 +237,7 @@ json_state_t json_parse(const char* raw)
 
 	for (; *raw; raw++)
 	{
-		if (*raw == '-' || (*raw >= '0' && *raw <= '9'))
-		{
-			GUARD(expectation & VALUE, JSON_ERROR_MISC);
-
-			value_t curr = { .type = TYPE_NUMBER };
-			doc.error = json_parse_number(&raw, &curr.data.number, false);
-
-			GUARD(doc.error == JSON_ERROR_NONE, doc.error);
-			GUARD(array_push(stack, curr), JSON_ERROR_SYSTEM);
-
-			expectation = NEXT_ITEM_EXPECTATION;
-			continue;
-		}
-
+		value_t next;
 		switch (*raw)
 		{
 		case '/':
@@ -261,19 +254,18 @@ json_state_t json_parse(const char* raw)
 				for (; *raw && !(prev == '*' && *raw == '/'); raw++);
 				GUARD(*raw, JSON_ERROR_UNEXPECTED_TOKEN);
 			}
-			break;
+			continue;
 		}
 
 		case '\"':
 		{
-			GUARD(expectation ^ DELIMITER, JSON_ERROR_UNEXPECTED_TOKEN);
+			GUARD(expectation & (KEY | VALUE), JSON_ERROR_UNEXPECTED_TOKEN);
 
 			char* str;
 			doc.error = json_parse_string(&raw, &str);
 			GUARD(doc.error == JSON_ERROR_NONE, doc.error);
 
-			value_t val = { .type = TYPE_STRING, .data.string = str };
-			GUARD(array_push(stack, val), JSON_ERROR_SYSTEM);
+			next = (value_t) { .type = TYPE_STRING, .data.string = str };
 
 			expectation = DELIMITER;
 			break;
@@ -283,24 +275,24 @@ json_state_t json_parse(const char* raw)
 		{
 			GUARD(expectation & VALUE, JSON_ERROR_UNEXPECTED_TOKEN);
 
-			value_t curr = { .type = TYPE_OBJECT, .data.object = hashmap_create_id(indent) };
-			GUARD(curr.data.object != NULL && array_push(stack, curr), JSON_ERROR_SYSTEM);
+			next = (value_t) { .type = TYPE_OBJECT, .data.object = hashmap_create() };
+			GUARD(next.data.object != NULL && array_push(stack, next), JSON_ERROR_SYSTEM);
 
-			expectation = KEY | SQUIGGLY;
 			indent++;
-			break;
+			expectation = KEY | SQUIGGLY;
+			continue;
 		}
 
 		case '[':
 		{
 			GUARD(expectation & VALUE, JSON_ERROR_UNEXPECTED_TOKEN);
 
-			value_t curr = { .type = TYPE_ARRAY, .data.array = array_create_id(indent) };
-			GUARD(curr.data.array != NULL && array_push(stack, curr), JSON_ERROR_SYSTEM);
+			next = (value_t) { .type = TYPE_ARRAY, .data.array = array_create() };
+			GUARD(next.data.array != NULL && array_push(stack, next), JSON_ERROR_SYSTEM);
 
-			expectation = VALUE | SQUARE;
 			indent++;
-			break;
+			expectation = VALUE | SQUARE;
+			continue;
 		}
 
 		case 't':
@@ -308,20 +300,20 @@ json_state_t json_parse(const char* raw)
 		case 'n':
 		{
 			GUARD(expectation & VALUE, JSON_ERROR_UNEXPECTED_TOKEN);
-			value_t curr = { .type = TYPE_BOOLEAN };
+			next = (value_t) { .type = TYPE_BOOLEAN };
 			if (strncmp("true", raw, 4) == 0)
 			{
-				curr.data.boolean = true;
+				next.data.boolean = true;
 				raw += 3;
 			}
 			else if (strncmp("false", raw, 5) == 0)
 			{
-				curr.data.boolean = false;
+				next.data.boolean = false;
 				raw += 4;
 			}
 			else if (strncmp("null", raw, 4) == 0)
 			{
-				curr.type = TYPE_NULL;
+				next.type = TYPE_NULL;
 				raw += 3;
 			}
 			else
@@ -329,80 +321,62 @@ json_state_t json_parse(const char* raw)
 				GUARD(false, JSON_ERROR_UNEXPECTED_TOKEN);
 			}
 
-			GUARD(array_push(stack, curr), JSON_ERROR_SYSTEM);
 			expectation = NEXT_ITEM_EXPECTATION;
 			break;
 		}
 
 		case ',':
 		{
-			GUARD(expectation & DELIMITER, JSON_ERROR_UNEXPECTED_TOKEN);
-			expectation = KEY | VALUE;
-			break;
+			GUARD(expectation & COMMA && array_count(stack) > 0, JSON_ERROR_UNEXPECTED_TOKEN);
+			if (ARRAY_TOP(stack).type == TYPE_ARRAY)
+			{
+				expectation = VALUE;
+			}
+			else if (ARRAY_TOP(stack).type == TYPE_OBJECT)
+			{
+				expectation = KEY;
+			}
+			else
+			{
+				GUARD(false, JSON_ERROR_UNEXPECTED_TOKEN);
+			}
+
+			continue;
 		}
 
 		case ':':
 		{
-			GUARD(expectation & DELIMITER, JSON_ERROR_UNEXPECTED_TOKEN);
+			GUARD(expectation & COLON && array_count(stack) > 0 && ARRAY_TOP(stack).type == TYPE_OBJECT, JSON_ERROR_UNEXPECTED_TOKEN);
 			expectation = VALUE;
-			break;
+			continue;
 		}
 
 		case '}':
 		{
 			GUARD(expectation & SQUIGGLY, JSON_ERROR_UNEXPECTED_TOKEN);
-
-			int i;
-			for (i = array_count(stack) - 1; i >= 0; i--)
-			{
-				value_t val = array_get(stack, i);
-				if (val.type == TYPE_OBJECT && hashmap_id(val.data.object) == indent - 1)
-				{
-					break;
-				}
-			}
-			GUARD(i >= 0, JSON_ERROR_UNEXPECTED_TOKEN);
-
-			hashmap_t obj = array_get(stack, i).data.object;
-			for (int j = array_count(stack) - 1; j > i; j -= 2)
-			{
-				value_t key = array_get(stack, j - 1), 
-					val = array_get(stack, j);
-				array_pop(stack);
-				array_pop(stack);
-
-				GUARD(key.type == TYPE_STRING, JSON_ERROR_MISC);
-				GUARD(hashmap_set(obj, key.data.string, val), JSON_ERROR_SYSTEM);
-			}
-			indent--;
-			expectation = NEXT_ITEM_EXPECTATION;
-			break;
-		}
-
+			expectation = SQUARE;
 		case ']':
-		{
 			GUARD(expectation & SQUARE, JSON_ERROR_UNEXPECTED_TOKEN);
 
-			int i;
-			for (i = array_count(stack) - 1; i >= 0; i--)
+			if (array_count(stack) > 1)
 			{
-				value_t val = array_get(stack, i);
-				if (val.type == TYPE_ARRAY && array_id(val.data.array) == indent - 1)
+				value_t obj = ARRAY_TOP(stack), parent;
+				array_pop(stack);
+				parent = ARRAY_TOP(stack);
+				if (parent.type == TYPE_OBJECT)
 				{
-					break;
+					GUARD(hashmap_next_set(parent.data.object, obj), JSON_ERROR_SYSTEM);
+				}
+				else
+				{
+					GUARD(array_push(parent.data.array, obj), JSON_ERROR_SYSTEM);
 				}
 			}
-			GUARD(i >= 0, JSON_ERROR_UNEXPECTED_TOKEN);
 
-			array_t arr = array_get(stack, i).data.array;
-			for (int j = array_count(stack) - 1; j > i; j--)
-			{
-				GUARD(array_add(arr, 0, ARRAY_TOP(stack)), JSON_ERROR_SYSTEM);
-				array_pop(stack);
-			}
-			indent--;
 			expectation = NEXT_ITEM_EXPECTATION;
-			break;
+			indent--;
+
+			continue;
 		}
 
 		case ' ':
@@ -412,14 +386,50 @@ json_state_t json_parse(const char* raw)
 			continue;
 
 		default:
-			GUARD(false, JSON_ERROR_UNEXPECTED_TOKEN);
+		{
+			if (*raw == '-' || (*raw >= '0' && *raw <= '9'))
+			{
+				GUARD(expectation & VALUE, JSON_ERROR_MISC);
+
+				next = (value_t) { .type = TYPE_NUMBER };
+				doc.error = json_parse_number(&raw, &next.data.number, false);
+
+				GUARD(doc.error == JSON_ERROR_NONE, doc.error);
+
+				expectation = NEXT_ITEM_EXPECTATION;
+			}
+			else
+			{
+				GUARD(false, JSON_ERROR_UNEXPECTED_TOKEN);
+			}
+			break;
 		}
+		}
+
+		if (array_count(stack) > 0)
+		{
+			value_t parent = ARRAY_TOP(stack);
+			if (parent.type == TYPE_OBJECT)
+			{
+				GUARD(hashmap_next_set(parent.data.object, next), JSON_ERROR_SYSTEM);
+				continue;
+			}
+
+			GUARD(array_push(parent.data.array, next), JSON_ERROR_SYSTEM);
+			continue;
+		}
+
+		GUARD(array_push(stack, next), JSON_ERROR_SYSTEM);
 	}
-	
-	GUARD(array_count(stack) == 1, JSON_ERROR_MISC);
+
 	GUARD(indent == 0, JSON_ERROR_MISC);
+	GUARD(array_count(stack) == 1, JSON_ERROR_MISC);
 	doc.head = ARRAY_TOP(stack);
-	array_pop(stack);
+	if (doc.head.type == TYPE_OBJECT)
+	{
+		GUARD(hashmap_next_key(doc.head.data.object) == NULL, JSON_ERROR_EXPECTED_VALUE);
+	}
+	array_destroy(stack);
 
 	return doc;
 #undef GUARD
@@ -428,6 +438,7 @@ json_state_t json_parse(const char* raw)
 static void json_destroy_map_iterator(hashmap_t map, void* user, const char* key, value_t val)
 {
 	json_destroy(val);
+	free(key);
 }
 
 void json_destroy(value_t head)
@@ -509,7 +520,7 @@ void json_write_value(FILE* out, value_t val)
 		struct print_state this = { .out = out };
 		hashmap_iterate(val.data.object, &this, json_print_map_iterator);
 		indent--;
-		fprintf(out, "}");
+		PRINT_WITH_INDENT("%s}", "");
 		break;
 	}
 	case TYPE_STRING:

@@ -33,8 +33,8 @@ typedef struct value
 	} data;
 } value_t;
 
-/* creates an array list w/ id */
-array_t array_create_id(int id);
+/* creates an array list */
+array_t array_create(void);
 /* destroys an array and all its values */
 void array_destroy(array_t array);
 /* pushes a value onto the array */
@@ -53,19 +53,11 @@ value_t array_get(array_t array, int i);
 int array_count(const array_t array);
 /* returns array's raw data */
 const value_t* array_data(const array_t array);
-/* returns collections user-defined id */
-int array_id(const array_t array);
-
-/* creates an array list w/ id = -1 */
-inline array_t array_create(void)
-{
-	return array_create_id(-1);
-}
 
 #define ARRAY_TOP(array) (array_get(array, array_count(array) - 1))
 
-/* creates a hashmap w/ id */
-hashmap_t hashmap_create_id(int id);
+/* creates a hashmap */
+hashmap_t hashmap_create(void);
 /* destroys a hashmap and all its entries */
 void hashmap_destroy(hashmap_t map);
 /* adds an entry with key and copies val into it. If the entry already exists, it replaces it. Returns false on failure, true on success */
@@ -80,15 +72,12 @@ bool hashmap_exists(const hashmap_t map, const char* key);
 value_t hashmap_get(hashmap_t map, const char* key);
 /* returns count of entries */
 int hashmap_count(const hashmap_t map);
-/* returns collections user-defined id */
-int hashmap_id(const hashmap_t map);
+
+/* sets half of a pair. val can either be a key or a value of that pair, use hashmap_state to query whats expected */
+bool hashmap_next_set(hashmap_t map, value_t val);
+/* queries what the hashmap is expecting next for "hashmap_set_next" */
+const char* hashmap_next_key(const hashmap_t map);
 
 typedef void (*hashmap_iterator)(hashmap_t map, void* user, const char* key, value_t val);
 /* iterates through hashmap, calling func on each valid kvp */
 void hashmap_iterate(hashmap_t map, void* user, hashmap_iterator func);
-
-/* creates an array list w/ id = -1 */
-inline hashmap_t hashmap_create(void)
-{
-	return hashmap_create_id(-1);
-}

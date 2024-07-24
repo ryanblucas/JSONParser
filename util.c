@@ -13,13 +13,12 @@
 
 struct array
 {
-	int id;
 	int count,
 		reserved;
 	value_t* data;
 };
 
-array_t array_create_id(int id)
+array_t array_create(void)
 {
 	array_t result = malloc(sizeof * result);
 	if (result == NULL)
@@ -27,7 +26,6 @@ array_t array_create_id(int id)
 		return NULL;
 	}
 
-	result->id = id;
 	result->count = 0;
 	result->reserved = START_RESERVE;
 	result->data = malloc(sizeof * result->data * result->reserved);
@@ -125,12 +123,6 @@ const value_t* array_data(array_t array)
 	return array->data;
 }
 
-/* returns collections user-defined id */
-int array_id(const array_t array)
-{
-	return array->id;
-}
-
 /* This hashmap implementation doesn't use buckets for the sake of simplicity; it instead uses the hash a starting index. This is likely less performant. */
 #define EXISTS(map, hash) (hashmap_find((map), (hash)) < (map)->reserved)
 #define NOT_FOUND -1
@@ -145,13 +137,13 @@ struct key_value_pair
 
 struct hashmap
 {
-	int id;
 	int cache_count,
 		reserved;
+	const char* curr_key;
 	struct key_value_pair* data;
 };
 
-hashmap_t hashmap_create_id(int id)
+hashmap_t hashmap_create(void)
 {
 	hashmap_t result = malloc(sizeof * result);
 	if (result == NULL)
@@ -159,7 +151,7 @@ hashmap_t hashmap_create_id(int id)
 		return NULL;
 	}
 
-	result->id = id;
+	result->curr_key = NULL;
 	result->cache_count = 0;
 	result->reserved = START_RESERVE;
 	result->data = calloc(result->reserved, sizeof * result->data);
@@ -185,7 +177,7 @@ static inline bool hashmap_reserve(hashmap_t map, int addend)
 		return false;
 	}
 	struct hashmap prev = *map;
-	*map = (struct hashmap){ .id = map->id, .data = new, .reserved = new_count, .cache_count = 0 };
+	*map = (struct hashmap){ .data = new, .reserved = new_count, .cache_count = 0 };
 	for (int i = 0; i < prev.reserved; i++)
 	{
 		if (prev.data[i].key_hash != 0 &&
@@ -289,9 +281,27 @@ int hashmap_count(const hashmap_t map)
 	return map->cache_count;
 }
 
-int hashmap_id(const hashmap_t map)
+bool hashmap_next_set(hashmap_t map, value_t val)
 {
-	return map->id;
+	if (map->curr_key == NULL)
+	{
+		assert(val.type == TYPE_STRING);
+		map->curr_key = val.data.string;
+		return true;
+	}
+
+	bool result = hashmap_set(map, map->curr_key, val);
+	if (result)
+	{
+		map->curr_key = NULL;
+	}
+
+	return result;
+}
+
+const char* hashmap_next_key(const hashmap_t map)
+{
+	return map->curr_key;
 }
 
 void hashmap_iterate(hashmap_t map, void* user, hashmap_iterator func)

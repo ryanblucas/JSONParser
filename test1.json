@@ -1,6 +1,5 @@
-{ /* this tests all features 
-  of a JSON file */
-  // like comments
+{
+  "EscapeKey": "\"\\\/\b\f\t\r\n\u0065",
   "StringKey": "Value",
   "NumberKey": 1,
   "ObjectKey": {
