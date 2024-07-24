@@ -3,6 +3,7 @@
 */
 
 #include "json.h"
+#include <ctype.h>
 #include <malloc.h>
 #include <math.h>
 #include <stdio.h>
@@ -25,6 +26,84 @@ static inline void* json_realloc_with_zeros(const void* ptr, size_t old_size, si
 	memset((char*)res + old_size, 0, new_size - old_size);
 
 	return res;
+}
+
+static json_error_t json_parse_escape(const char** praw, char** pcurr)
+{
+	const char* raw = *praw;
+	char* curr = *pcurr;
+	switch (*++raw)
+	{
+	case '"':
+		*curr++ = '\"';
+		break;
+	case '\\':
+		*curr++ = '\\';
+		break;
+	case '/':
+		*curr++ = '/';
+		break;
+	case 'b':
+		*curr++ = '\b';
+		break;
+	case 'f':
+		*curr++ = '\f';
+		break;
+	case 'n':
+		*curr++ = '\n';
+		break;
+	case 'r':
+		*curr++ = '\r';
+		break;
+	case 't':
+		*curr++ = '\t';
+		break;
+
+	case 'u':
+	{
+		char nibbles[4];
+		for (int i = 0; *raw && i < 4; i++)
+		{
+			raw++;
+			if (*raw >= '0' && *raw <= '9')
+			{
+				nibbles[i] = *raw - '0';
+			}
+			else if (*raw >= 'A' && *raw <= 'F')
+			{
+				nibbles[i] = *raw - 'A' + 0x0A;
+			}
+			else if (*raw >= 'a' && *raw <= 'f')
+			{
+				nibbles[i] = *raw - 'a' + 0x0a;
+			}
+			else
+			{
+				return JSON_ERROR_INVALID_HEX_DIGIT;
+			}
+		}
+		char first = nibbles[1] | (nibbles[0] << 4),
+			second = nibbles[3] | (nibbles[2] << 4);
+
+		if (first == 0 && second == 0)
+		{
+			return JSON_ERROR_NULL_TERMINATOR;
+		}
+
+		if (second & 0x80)
+		{
+			*curr++ = first;
+		}
+		*curr++ = second;
+		break;
+	}
+	default:
+		return JSON_ERROR_INVALID_ESCAPE_SEQUENCE;
+	}
+
+	*praw = raw;
+	*pcurr = curr;
+	return JSON_ERROR_NONE;
 }
 
 static json_error_t json_parse_string(const char** praw, char** res)
@@ -70,77 +149,11 @@ static json_error_t json_parse_string(const char** praw, char** res)
 			continue;
 		}
 
-		switch (*++raw)
+		json_error_t escape_result = json_parse_escape(&raw, &curr);
+		if (escape_result != JSON_ERROR_NONE)
 		{
-		case '"':
-			*curr++ = '\"';
-			break;
-		case '\\':
-			*curr++ = '\\';
-			break;
-		case '/':
-			*curr++ = '/';
-			break;
-		case 'b':
-			*curr++ = '\b';
-			break;
-		case 'f':
-			*curr++ = '\f';
-			break;
-		case 'n':
-			*curr++ = '\n';
-			break;
-		case 'r':
-			*curr++ = '\r';
-			break;
-		case 't':
-			*curr++ = '\t';
-			break;
-
-		case 'u':
-		{
-			char nibbles[4];
-			for (int i = 0; *raw && i < 4; i++)
-			{
-				raw++;
-				if (*raw >= '0' && *raw <= '9')
-				{
-					nibbles[i] = *raw - '0';
-				}
-				else if (*raw >= 'A' && *raw <= 'F')
-				{
-					nibbles[i] = *raw - 'A' + 0x0A;
-				}
-				else if (*raw >= 'a' && *raw <= 'f')
-				{
-					nibbles[i] = *raw - 'a' + 0x0a;
-				}
-				else
-				{
-					free(*res);
-					return JSON_ERROR_INVALID_HEX_DIGIT;
-				}
-			}
-			char first = nibbles[0] | (nibbles[1] << 4),
-				second = nibbles[2] | (nibbles[3] << 4);
-
-			if (first == 0 && second == 0)
-			{
-				free(*res);
-				return JSON_ERROR_NULL_TERMINATOR;
-			}
-
-			if (second & 0x80)
-			{
-				*curr++ = first;
-			}
-			*curr++ = second;
-			raw--;
-			break;
-		}
-		default:
 			free(*res);
-			return JSON_ERROR_INVALID_ESCAPE_SEQUENCE;
+			return escape_result;
 		}
 	}
 	*praw = raw;
@@ -488,6 +501,39 @@ static void json_print_map_iterator(hashmap_t map, void* user, const char* key, 
 	}
 }
 
+static void json_write_escaped(FILE* out, char ch)
+{
+	switch (ch)
+	{
+	case '\b':
+		fprintf(out, "\\b");
+		break;
+	case '\f':
+		fprintf(out, "\\f");
+		break;
+	case '\n':
+		fprintf(out, "\\n");
+		break;
+	case '\r':
+		fprintf(out, "\\r");
+		break;
+	case '\t':
+		fprintf(out, "\\t");
+		break;
+	default:
+	{
+		if (isprint(ch))
+		{
+			fputc(ch, out);
+		}
+		else
+		{
+			fprintf(out, "\\X%02hhX", ch); /* leading 0s, signed char input in uppercase hex */
+		}
+	}
+	}
+}
+
 void json_write_value(FILE* out, value_t val)
 {
 	switch (val.type)
@@ -524,8 +570,15 @@ void json_write_value(FILE* out, value_t val)
 		break;
 	}
 	case TYPE_STRING:
-		fprintf(out, "\"%s\"", val.data.string);
+	{
+		fprintf(out, "\"");
+		for (char* curr = val.data.string; *curr; curr++)
+		{
+			json_write_escaped(out, *curr);
+		}
+		fprintf(out, "\"");
 		break;
+	}
 	case TYPE_NUMBER:
 		fprintf(out, "%f", val.data.number);
 		break;
